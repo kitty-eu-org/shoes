@@ -1,51 +1,5 @@
-mod address;
-mod async_stream;
-mod buf_reader;
-mod client_proxy_chain;
-mod client_proxy_selector;
-mod config;
-mod copy_bidirectional;
-mod copy_bidirectional_message;
-mod copy_multidirectional_message;
-mod copy_session_messages;
-mod crypto;
-mod http_handler;
-mod hysteria2_client;
-mod hysteria2_protocol;
-mod hysteria2_server;
-mod option_util;
-mod port_forward_handler;
-mod quic_server;
-mod quic_stream;
-mod reality;
-mod reality_client_handler;
-mod resolver;
-mod rustls_config_util;
-mod rustls_connection_util;
-mod shadow_tls;
-mod shadowsocks;
-mod slide_buffer;
-mod snell;
-mod socket_util;
-mod socks5_udp_relay;
-mod socks_handler;
-mod stream_reader;
-mod sync_adapter;
-mod tcp;
-mod thread_util;
-mod tls_client_handler;
-mod tls_server_handler;
-mod trojan_handler;
-mod tuic_server;
-mod udp_message_stream;
-mod udp_multi_message_stream;
-mod udp_session_message_stream;
-mod uot;
-mod util;
-mod vless;
-mod vmess;
-mod websocket;
-mod xudp;
+// Library exports all modules via lib.rs
+// CLI only uses the public API from the library
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -61,17 +15,15 @@ use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use base64::engine::{Engine as _, general_purpose::STANDARD};
 use log::debug;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use tcp_server::start_tcp_servers;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 
-use crate::config::{ServerConfig, Transport};
-use crate::quic_server::start_quic_servers;
-use crate::reality::generate_keypair;
-use crate::shadowsocks::ShadowsocksCipher;
-use crate::thread_util::set_num_threads;
-use tcp::*;
+use shoes::config::{ServerConfig, Transport};
+use shoes::config;
+use shoes::reality::generate_keypair;
+use shoes::shadowsocks::ShadowsocksCipher;
+use shoes::thread_util::set_num_threads;
 
 #[derive(Debug)]
 struct ConfigChanged;
@@ -101,42 +53,7 @@ fn start_notify_thread(
 }
 
 async fn start_servers(config: ServerConfig) -> std::io::Result<Vec<JoinHandle<()>>> {
-    let mut join_handles = Vec::with_capacity(3);
-
-    match config.transport {
-        Transport::Tcp => match start_tcp_servers(config.clone()).await {
-            Ok(handles) => {
-                join_handles.extend(handles);
-            }
-            Err(e) => {
-                for join_handle in join_handles {
-                    join_handle.abort();
-                }
-                return Err(e);
-            }
-        },
-        Transport::Quic => match start_quic_servers(config.clone()).await {
-            Ok(handles) => {
-                join_handles.extend(handles);
-            }
-            Err(e) => {
-                for join_handle in join_handles {
-                    join_handle.abort();
-                }
-                return Err(e);
-            }
-        },
-        Transport::Udp => todo!(),
-    }
-
-    if join_handles.is_empty() {
-        return Err(std::io::Error::other(format!(
-            "failed to start servers at {}",
-            &config.bind_location
-        )));
-    }
-
-    Ok(join_handles)
+    shoes::start_server(config).await
 }
 
 fn print_usage_and_exit(arg0: String) {

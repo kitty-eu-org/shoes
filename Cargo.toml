@@ -10,6 +10,14 @@ readme = "README.md"
 keywords = ["proxy", "proxy-server", "shadowsocks", "v2ray", "vmess"]
 categories = ["command-line-utilities", "network-programming"]
 
+[lib]
+name = "shoes"
+path = "src/lib.rs"
+
+[[bin]]
+name = "shoes"
+path = "src/main.rs"
+
 [dependencies]
 aes = "*"
 argon2 = "*"
