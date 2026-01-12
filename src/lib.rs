@@ -89,7 +89,7 @@ mod socks5_udp_relay;
 mod socks_handler;
 mod stream_reader;
 mod sync_adapter;
-mod tcp;
+pub mod tcp;
 mod thread_util;
 mod tls_client_handler;
 mod tls_server_handler;
