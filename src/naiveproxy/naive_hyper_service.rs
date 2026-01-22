@@ -534,6 +534,21 @@ async fn handle_naive_stream<S: AsyncStream + 'static>(
                         )
                         .await;
                     }
+                    ConnectDecision::Direct { remote_location } => {
+                        // Direct connection - connect without proxy
+                        let client_stream = crate::client_proxy_chain::connect_direct_udp(
+                            &resolver,
+                            remote_location,
+                        ).await?;
+
+                        return run_udp_copy(
+                            Box::new(uot_v2_stream) as Box<dyn AsyncMessageStream>,
+                            client_stream,
+                            false,
+                            false,
+                        )
+                        .await;
+                    }
                     ConnectDecision::Block => {
                         return Err(io::Error::new(
                             io::ErrorKind::ConnectionRefused,
@@ -572,6 +587,10 @@ async fn handle_naive_stream<S: AsyncStream + 'static>(
         } => {
             let result = chain_group.connect_tcp(remote_location, &resolver).await?;
             result.client_stream
+        }
+        ConnectDecision::Direct { remote_location } => {
+            // Direct connection - connect without proxy
+            crate::client_proxy_chain::connect_direct_tcp(&resolver, remote_location).await?
         }
         ConnectDecision::Block => {
             debug!("NaiveProxy: connection blocked by rules");

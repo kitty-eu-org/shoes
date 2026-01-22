@@ -225,6 +225,21 @@ async fn process_streams(
                     )
                     .await
                 }
+                ConnectDecision::Direct { remote_location } => {
+                    // Direct connection - connect without proxy
+                    let client_stream = crate::client_proxy_chain::connect_direct_udp(
+                        &resolver,
+                        remote_location,
+                    ).await?;
+
+                    run_udp_copy(
+                        server_stream,
+                        client_stream,
+                        server_need_initial_flush,
+                        false,
+                    )
+                    .await
+                }
                 ConnectDecision::Block => Ok(()),
             }
         }

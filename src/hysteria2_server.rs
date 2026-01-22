@@ -555,7 +555,11 @@ async fn run_udp_local_to_remote_loop(
                     Ok(ConnectDecision::Allow {
                         chain_group,
                         remote_location,
-                    }) => (chain_group, remote_location),
+                    }) => (Some(chain_group), remote_location),
+                    Ok(ConnectDecision::Direct { remote_location }) => {
+                        // Direct connection - no chain group, but still process the location
+                        (None, remote_location)
+                    }
                     Ok(ConnectDecision::Block) => {
                         warn!("Blocked UDP forward to {remote_location}");
                         continue;
@@ -702,6 +706,7 @@ async fn run_udp_local_to_remote_loop(
                             chain_group: _,
                             remote_location,
                         }) => remote_location,
+                        Ok(ConnectDecision::Direct { remote_location }) => remote_location,
                         Ok(ConnectDecision::Block) => {
                             warn!("Blocked UDP forward to {remote_location}");
                             continue;

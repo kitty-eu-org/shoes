@@ -10,6 +10,8 @@ use crate::config::{
     ClientProxyConfig, RuleActionConfig, RuleConfig, ShadowsocksConfig, TlsClientConfig,
     WebsocketClientConfig,
 };
+use crate::config::server::GeoRoutingConfig;
+use crate::geo_routing::GeoMatcher;
 use crate::http_handler::HttpTcpClientHandler;
 use crate::naiveproxy::NaiveProxyTcpClientHandler;
 use crate::port_forward_handler::PortForwardClientHandler;
@@ -329,6 +331,15 @@ pub fn create_tcp_client_proxy_selector(
     rules: Vec<RuleConfig>,
     resolver: Arc<dyn Resolver>,
 ) -> ClientProxySelector {
+    create_tcp_client_proxy_selector_with_geo(rules, resolver, None)
+}
+
+/// Create a ClientProxySelector with optional geo routing support
+pub fn create_tcp_client_proxy_selector_with_geo(
+    rules: Vec<RuleConfig>,
+    resolver: Arc<dyn Resolver>,
+    geo_routing_config: Option<GeoRoutingConfig>,
+) -> ClientProxySelector {
     let rules = rules
         .into_iter()
         .map(|rule_config| {
@@ -346,5 +357,25 @@ pub fn create_tcp_client_proxy_selector(
             ConnectRule::new(masks.into_vec(), connect_action)
         })
         .collect::<Vec<_>>();
-    ClientProxySelector::new(rules)
+
+    // Create geo matcher if config is provided
+    let geo_matcher = geo_routing_config
+        .and_then(|config| {
+            match GeoMatcher::from_dat_files(
+                config.geoip_file.as_deref(),
+                config.geosite_file.as_deref(),
+            ) {
+                Ok(Some(matcher)) => Some(Arc::new(matcher)),
+                Ok(None) => {
+                    log::warn!("Geo routing config provided but no .dat files loaded, geo routing disabled");
+                    None
+                }
+                Err(e) => {
+                    log::warn!("Failed to load geo data for geo routing: {}. Geo routing disabled.", e);
+                    None
+                }
+            }
+        });
+
+    ClientProxySelector::with_options(rules, false, geo_matcher)
 }

@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use log::debug;
 
 use crate::address::NetLocation;
-use crate::async_stream::AsyncMessageStream;
+use crate::async_stream::{AsyncMessageStream, AsyncStream};
 use crate::resolver::Resolver;
 use crate::tcp::proxy_connector::ProxyConnector;
 use crate::tcp::socket_connector::SocketConnector;
@@ -540,6 +540,62 @@ impl ClientChainGroup {
     pub fn supports_udp(&self) -> bool {
         !self.udp_chain_indices.is_empty()
     }
+}
+
+/// Direct TCP connection without proxy.
+/// Used for geo routing when CN traffic should bypass all proxies.
+pub async fn connect_direct_tcp(
+    resolver: &Arc<dyn Resolver>,
+    remote_location: NetLocation,
+) -> std::io::Result<Box<dyn AsyncStream>> {
+    use crate::config::{ClientConfig, ClientProxyConfig};
+    use crate::tcp::socket_connector_impl::SocketConnectorImpl;
+
+    debug!("[DIRECT] Connecting directly to {}", remote_location);
+
+    // Create a minimal direct config
+    let config = ClientConfig {
+        protocol: ClientProxyConfig::Direct,
+        ..Default::default()
+    };
+
+    // Create socket connector from config
+    let socket = SocketConnectorImpl::from_config(&config, Some(&remote_location))
+        .ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Failed to create socket connector",
+        ))?;
+
+    let stream = socket.connect(resolver, &remote_location).await?;
+
+    Ok(stream)
+}
+
+/// Direct UDP connection without proxy.
+/// Used for geo routing when CN traffic should bypass all proxies.
+pub async fn connect_direct_udp(
+    resolver: &Arc<dyn Resolver>,
+    target: NetLocation,
+) -> std::io::Result<Box<dyn AsyncMessageStream>> {
+    use crate::config::{ClientConfig, ClientProxyConfig};
+    use crate::tcp::socket_connector_impl::SocketConnectorImpl;
+
+    debug!("[DIRECT] Connecting UDP directly to {}", target);
+
+    // Create a minimal direct config
+    let config = ClientConfig {
+        protocol: ClientProxyConfig::Direct,
+        ..Default::default()
+    };
+
+    // Create socket connector from config
+    let socket = SocketConnectorImpl::from_config(&config, Some(&target))
+        .ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Failed to create socket connector",
+        ))?;
+
+    socket.connect_udp_bidirectional(resolver, target).await
 }
 
 #[cfg(test)]

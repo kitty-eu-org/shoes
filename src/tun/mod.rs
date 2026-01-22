@@ -243,6 +243,38 @@ async fn handle_tcp_connection(
                 }
             }
         }
+        crate::client_proxy_selector::ConnectDecision::Direct { remote_location } => {
+            debug!("TCP: connecting directly to {}", remote_location);
+
+            match crate::client_proxy_chain::connect_direct_tcp(&resolver, remote_location.clone()).await {
+                Ok(mut remote) => {
+                    debug!(
+                        "TCP: connected directly to {}, starting bidirectional copy",
+                        remote_location
+                    );
+
+                    let result = tokio::io::copy_bidirectional(&mut connection, &mut remote).await;
+
+                    match result {
+                        Ok((client_to_remote, remote_to_client)) => {
+                            debug!(
+                                "TCP connection to {} completed: {} bytes sent, {} bytes received",
+                                remote_location, client_to_remote, remote_to_client
+                            );
+                        }
+                        Err(e) => {
+                            debug!("TCP connection to {} error: {}", remote_location, e);
+                        }
+                    }
+
+                    Ok(())
+                }
+                Err(e) => {
+                    warn!("Failed to connect to {}: {}", remote_location, e);
+                    Err(e)
+                }
+            }
+        }
         crate::client_proxy_selector::ConnectDecision::Block => {
             debug!("TCP connection to {} blocked by rules", target);
             Ok(())

@@ -64,6 +64,9 @@ mod client_proxy_selector;
 mod copy_bidirectional;
 mod copy_bidirectional_message;
 mod crypto;
+
+/// Geo routing module for Clash-style traffic diversion based on GeoIP and GeoSite.
+pub mod geo_routing;
 mod http_handler;
 mod hysteria2_client;
 mod hysteria2_protocol;

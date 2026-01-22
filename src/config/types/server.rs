@@ -153,6 +153,18 @@ pub fn direct_allow_rule() -> NoneOrSome<ConfigSelection<RuleConfig>> {
     NoneOrSome::One(ConfigSelection::Config(RuleConfig::default()))
 }
 
+/// Geo routing configuration for Clash-style traffic diversion
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeoRoutingConfig {
+    /// Path to GeoIP.dat file
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geoip_file: Option<String>,
+    /// Path to GeoSite.dat file
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geosite_file: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerConfig {
     #[serde(flatten)]
@@ -174,6 +186,9 @@ pub struct ServerConfig {
         skip_serializing_if = "NoneOrSome::is_unspecified"
     )]
     pub rules: NoneOrSome<ConfigSelection<RuleConfig>>,
+    /// Geo routing configuration for Clash-style traffic diversion
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_routing: Option<GeoRoutingConfig>,
 }
 
 impl<'de> serde::de::Deserialize<'de> for ServerConfig {
@@ -188,7 +203,7 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             .as_mapping()
             .ok_or_else(|| Error::custom("ServerConfig must be a YAML mapping"))?;
 
-        // Valid fields: address/path (bind_location), protocol, transport, tcp_settings, quic_settings, rules/rule
+        // Valid fields: address/path (bind_location), protocol, transport, tcp_settings, quic_settings, rules/rule, geo_routing
         const VALID_FIELDS: &[&str] = &[
             "address",
             "path", // BindLocation (flattened)
@@ -198,6 +213,7 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             "quic_settings",
             "rules",
             "rule",
+            "geo_routing",
         ];
 
         // Check for unknown fields
@@ -271,6 +287,14 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             .map_err(|e| Error::custom(format!("invalid rules: {e}")))?
             .unwrap_or_else(direct_allow_rule);
 
+        // Parse geo_routing (optional, skip if null)
+        let geo_routing: Option<GeoRoutingConfig> = map
+            .get("geo_routing")
+            .filter(|v| !v.is_null())
+            .map(|v| serde_yaml::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| Error::custom(format!("invalid geo_routing: {e}")))?;
+
         Ok(ServerConfig {
             bind_location,
             protocol,
@@ -278,6 +302,7 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             tcp_settings,
             quic_settings,
             rules,
+            geo_routing,
         })
     }
 }

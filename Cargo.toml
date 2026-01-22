@@ -51,6 +51,16 @@ mime_guess = "*"
 notify = "*"
 parking_lot = "*"
 percent-encoding = "*"
+prost = "0.12"
+# CIDR utilities for geo IP matching
+cidr = "0.2"
+cidr-utils = "0.6"
+# Domain parsing
+addr = "0.15"
+# URL parsing for geo routing
+url = "2.5"
+# Regex for geosite matching
+regex = "1"
 quinn = { version = "*", default-features = false, features = ["log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
 rand = "*"
 rand_core = "*"

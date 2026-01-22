@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use super::tcp_client_handler_factory::create_tcp_client_proxy_selector;
+use super::tcp_client_handler_factory::{create_tcp_client_proxy_selector, create_tcp_client_proxy_selector_with_geo};
 use super::tcp_server_handler_factory::create_tcp_server_handler;
 
 use crate::address::NetLocation;
@@ -155,6 +155,7 @@ where
             connection_success_response,
             initial_remote_data,
         } => {
+            debug!("[TCP] TcpForward: Connecting to remote location {}", remote_location);
             let setup_client_stream_future = timeout(
                 Duration::from_secs(60),
                 setup_client_tcp_stream(
@@ -239,6 +240,19 @@ where
                     )
                     .await
                 }
+                ConnectDecision::Direct { remote_location } => {
+                    // Direct connection - connect without proxy
+                    let client_stream = crate::client_proxy_chain::connect_direct_udp(&resolver, remote_location)
+                        .await?;
+
+                    run_udp_copy(
+                        server_stream,
+                        client_stream,
+                        server_need_initial_flush,
+                        false,
+                    )
+                    .await
+                }
                 ConnectDecision::Block => Err(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
                     "Blocked bidirectional udp forward",
@@ -287,9 +301,11 @@ pub async fn setup_client_tcp_stream(
     resolver: Arc<dyn Resolver>,
     remote_location: NetLocation,
 ) -> std::io::Result<Option<Box<dyn AsyncStream>>> {
+    debug!("[TCP] Routing TCP connection to {}", remote_location);
     let action = client_proxy_selector
-        .judge(remote_location, &resolver)
+        .judge(remote_location.clone(), &resolver)
         .await?;
+    debug!("[TCP] Routing decision for {} -> {:?}", remote_location, action);
 
     match action {
         ConnectDecision::Allow {
@@ -306,6 +322,11 @@ pub async fn setup_client_tcp_stream(
                 server_stream.flush().await?;
             }
 
+            Ok(Some(client_stream))
+        }
+        ConnectDecision::Direct { remote_location } => {
+            // Direct connection - connect without proxy
+            let client_stream = crate::client_proxy_chain::connect_direct_tcp(&resolver, remote_location).await?;
             Ok(Some(client_stream))
         }
         ConnectDecision::Block => Ok(None),
@@ -393,6 +414,7 @@ async fn start_tcp_servers(config: ServerConfig) -> std::io::Result<Vec<JoinHand
         tcp_settings,
         protocol,
         rules,
+        geo_routing,
         ..
     } = config;
 
@@ -406,9 +428,10 @@ async fn start_tcp_servers(config: ServerConfig) -> std::io::Result<Vec<JoinHand
 
     let resolver: Arc<dyn Resolver> = Arc::new(NativeResolver::new());
 
-    let client_proxy_selector = Arc::new(create_tcp_client_proxy_selector(
+    let client_proxy_selector = Arc::new(create_tcp_client_proxy_selector_with_geo(
         rules.clone(),
         resolver.clone(),
+        geo_routing,
     ));
 
     // Extract bind_ip from bind_location for handlers that need it (e.g., SOCKS5 UDP ASSOCIATE)

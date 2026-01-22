@@ -1059,6 +1059,18 @@ impl<'a> UdpRouter<'a> {
                         resolved_addr,
                     })
                 }
+                ConnectDecision::Direct { remote_location } => {
+                    // Direct connection - connect without proxy
+                    let client_stream = crate::client_proxy_chain::connect_direct_udp(
+                        &resolver,
+                        remote_location,
+                    ).await?;
+
+                    Ok(SessionCreateResult {
+                        remote: client_stream,
+                        resolved_addr,
+                    })
+                }
                 ConnectDecision::Block => Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "Destination blocked by routing rules",

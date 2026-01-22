@@ -752,6 +752,50 @@ impl AnyTlsSession {
 
                 result
             }
+            ConnectDecision::Direct { remote_location } => {
+                log::debug!(
+                    "AnyTLS stream {} routing {} directly",
+                    stream_id,
+                    remote_location
+                );
+
+                // Connect directly without proxy
+                let mut client_stream = match crate::client_proxy_chain::connect_direct_tcp(
+                    &self.resolver,
+                    remote_location,
+                ).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        // Send SYNACK with error message (protocol v2)
+                        let error_msg = format!("connect failed: {}", e);
+                        let _ = self.send_synack(stream_id, Some(&error_msg)).await;
+                        return Err(e);
+                    }
+                };
+
+                // Send successful SYNACK (protocol v2)
+                if let Err(e) = self.send_synack(stream_id, None).await {
+                    log::debug!("Failed to send SYNACK for stream {}: {}", stream_id, e);
+                    // Continue anyway - client may be v1
+                }
+
+                log::debug!("AnyTLS stream {} connected directly to destination", stream_id);
+
+                // Bidirectional copy
+                let result =
+                    copy_bidirectional(&mut stream, &mut *client_stream, false, false).await;
+
+                let _ = stream.shutdown().await;
+                let _ = client_stream.shutdown().await;
+
+                if let Err(e) = &result {
+                    log::debug!("AnyTLS stream {} ended: {}", stream_id, e);
+                } else {
+                    log::debug!("AnyTLS stream {} completed", stream_id);
+                }
+
+                result
+            }
             ConnectDecision::Block => {
                 // Send SYNACK with error (protocol v2)
                 let error_msg = format!("blocked by rules: {}", destination);
@@ -861,6 +905,47 @@ impl AnyTlsSession {
                     .connect_udp_bidirectional(&self.resolver, remote_location)
                     .await
                 {
+                    Ok(result) => result,
+                    Err(e) => {
+                        // Send SYNACK with error (protocol v2)
+                        let error_msg = format!("UDP connect failed: {}", e);
+                        let _ = self.send_synack(stream_id, Some(&error_msg)).await;
+                        return Err(e);
+                    }
+                };
+
+                // Send successful SYNACK (protocol v2)
+                let _ = self.send_synack(stream_id, None).await;
+
+                log::debug!("AnyTLS stream {} UoT V2 connect: connected", stream_id);
+
+                // Run UDP copy
+                let result = run_udp_copy(server_stream, client_stream, false, false).await;
+
+                if let Err(e) = &result {
+                    log::debug!("AnyTLS stream {} UoT V2 connect ended: {}", stream_id, e);
+                } else {
+                    log::debug!("AnyTLS stream {} UoT V2 connect completed", stream_id);
+                }
+
+                result
+            }
+            ConnectDecision::Direct { remote_location } => {
+                log::debug!(
+                    "AnyTLS stream {} UoT V2 connect: routing {} directly",
+                    stream_id,
+                    remote_location
+                );
+
+                // Wrap AnyTlsStream as AsyncMessageStream (VlessMessageStream for length-prefixed)
+                let server_stream: Box<dyn AsyncMessageStream> =
+                    Box::new(VlessMessageStream::new(stream));
+
+                // Connect directly without proxy
+                let client_stream = match crate::client_proxy_chain::connect_direct_udp(
+                    &self.resolver,
+                    remote_location,
+                ).await {
                     Ok(result) => result,
                     Err(e) => {
                         // Send SYNACK with error (protocol v2)

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crate::address::{Address, NetLocation};
 use crate::address::{AddressMask, NetLocationMask};
 use crate::client_proxy_chain::ClientChainGroup;
+use crate::geo_routing::GeoMatcher;
 use crate::resolver::{Resolver, resolve_single_address};
 
 /// Cache key for routing decisions.
@@ -47,6 +48,8 @@ impl RoutingCacheKey {
 pub(crate) enum CachedDecision {
     /// Index into the rules Vec for an Allow decision
     Allow(usize),
+    /// Direct connection decision (for geo routing CN bypass)
+    Direct,
     /// Block decision
     Block,
 }
@@ -187,6 +190,9 @@ pub struct ClientProxySelector {
     /// LRU cache for routing decisions. Speeds up repeated lookups for the same destination.
     /// None if caching is disabled (few rules and no DNS resolution).
     cache: Option<RoutingCache>,
+    /// Optional geo matcher for Clash-style routing based on GeoIP and GeoSite.
+    /// If Some, CN (China) traffic will be routed directly, other traffic through proxy.
+    geo_matcher: Option<Arc<GeoMatcher>>,
 }
 
 unsafe impl Send for ClientProxySelector {}
@@ -194,16 +200,22 @@ unsafe impl Sync for ClientProxySelector {}
 
 #[derive(Debug)]
 pub enum ConnectDecision<'a> {
+    /// Allow connection through a proxy chain group
     Allow {
         chain_group: &'a ClientChainGroup,
         remote_location: NetLocation,
     },
+    /// Allow direct connection without proxy (for geo routing CN bypass)
+    Direct {
+        remote_location: NetLocation,
+    },
+    /// Block the connection
     Block,
 }
 
 impl ClientProxySelector {
     pub fn new(rules: Vec<ConnectRule>) -> Self {
-        Self::with_options(rules, false)
+        Self::with_options(rules, false, None)
     }
 
     /// Create a new ClientProxySelector with configurable hostname resolution behavior.
@@ -213,10 +225,12 @@ impl ClientProxySelector {
     /// * `resolve_rule_hostnames` - If true, hostname rules will be resolved via DNS to match
     ///   against IP-based destinations. If false (default), hostname rules only match hostname
     ///   destinations directly. Setting this to false is more performant for large rule sets.
-    pub fn with_options(rules: Vec<ConnectRule>, resolve_rule_hostnames: bool) -> Self {
+    /// * `geo_matcher` - Optional geo matcher for Clash-style routing (CN → Direct, others → Proxy)
+    pub fn with_options(rules: Vec<ConnectRule>, resolve_rule_hostnames: bool, geo_matcher: Option<Arc<GeoMatcher>>) -> Self {
         Self::with_options_and_cache_size(
             rules,
             resolve_rule_hostnames,
+            geo_matcher,
             RoutingCache::DEFAULT_CAPACITY,
         )
     }
@@ -228,6 +242,7 @@ impl ClientProxySelector {
     /// * `resolve_rule_hostnames` - If true, hostname rules will be resolved via DNS to match
     ///   against IP-based destinations. If false (default), hostname rules only match hostname
     ///   destinations directly.
+    /// * `geo_matcher` - Optional geo matcher for Clash-style routing (CN → Direct, others → Proxy)
     /// * `cache_capacity` - Maximum number of routing decisions to cache. Set to 0 to disable caching.
     ///
     /// # Caching behavior
@@ -240,12 +255,14 @@ impl ClientProxySelector {
     pub fn with_options_and_cache_size(
         rules: Vec<ConnectRule>,
         resolve_rule_hostnames: bool,
+        geo_matcher: Option<Arc<GeoMatcher>>,
         cache_capacity: usize,
     ) -> Self {
         // Enable caching if:
         // 1. DNS resolution is enabled (expensive operation), OR
-        // 2. Many rules (linear scan becomes expensive)
-        let cache = if resolve_rule_hostnames || rules.len() > CACHE_RULE_THRESHOLD {
+        // 2. Many rules (linear scan becomes expensive), OR
+        // 3. Geo matcher is present (geo matching is cheap but cache helps for repeated lookups)
+        let cache = if resolve_rule_hostnames || rules.len() > CACHE_RULE_THRESHOLD || geo_matcher.is_some() {
             Some(RoutingCache::new(cache_capacity.max(1)))
         } else {
             None
@@ -255,7 +272,22 @@ impl ClientProxySelector {
             rules,
             resolve_rule_hostnames,
             cache,
+            geo_matcher,
         }
+    }
+
+    /// Set the geo matcher for Clash-style routing.
+    pub fn set_geo_matcher(&mut self, geo_matcher: Option<Arc<GeoMatcher>>) {
+        self.geo_matcher = geo_matcher;
+        // Update cache based on new geo matcher presence
+        if self.geo_matcher.is_some() && self.cache.is_none() {
+            self.cache = Some(RoutingCache::new(RoutingCache::DEFAULT_CAPACITY));
+        }
+    }
+
+    /// Get reference to the geo matcher.
+    pub fn geo_matcher(&self) -> Option<&Arc<GeoMatcher>> {
+        self.geo_matcher.as_ref()
     }
 
     /// Judge a connection request, using the cache for faster repeated lookups.
@@ -272,6 +304,7 @@ impl ClientProxySelector {
         resolved_address: Option<SocketAddr>,
         resolver: &Arc<dyn Resolver>,
     ) -> std::io::Result<ConnectDecision<'a>> {
+        debug!("[ROUTING] Evaluating destination: {} (resolved: {:?})", location, resolved_address);
         let resolved_ip = resolved_address.map(|addr| ip_to_u128(addr.ip()));
 
         // If caching is disabled, go directly to rule matching
@@ -282,7 +315,29 @@ impl ClientProxySelector {
 
         // Fast path: check cache first
         if let Some(cached) = cache.get(&location) {
+            debug!("[ROUTING] Cache HIT for {} -> {:?}", location, cached);
             return Ok(self.cached_to_decision(cached, location));
+        }
+        debug!("[ROUTING] Cache MISS for {}", location);
+
+        // Geo routing check - before mask rules
+        // CN (China) traffic → Direct, everything else → fall through to mask rules
+        if let Some(geo_matcher) = &self.geo_matcher {
+            let host = location_to_host(&location);
+            if let Some(geo_action) = geo_matcher.judge(&host) {
+                match geo_action {
+                    crate::geo_routing::RouteAction::Direct => {
+                        // CN traffic - route directly
+                        debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
+                        cache.insert(&location, CachedDecision::Direct);
+                        return Ok(ConnectDecision::Direct { remote_location: location });
+                    }
+                    crate::geo_routing::RouteAction::Proxy => {
+                        // Non-CN traffic - fall through to mask rules
+                        debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
+                    }
+                }
+            }
         }
 
         // Slow path: full rule matching
@@ -297,11 +352,13 @@ impl ClientProxySelector {
         {
             Some((rule_index, rule)) => {
                 // Cache the result
+                debug!("[ROUTING] {} -> ALLOW (rule #{}, masks: {:?})", location, rule_index, rule.masks);
                 cache.insert(&location, CachedDecision::Allow(rule_index));
                 Ok(rule.action.to_decision(location))
             }
             None => {
                 // Cache the block decision
+                debug!("[ROUTING] {} -> BLOCK (no matching rule)", location);
                 cache.insert(&location, CachedDecision::Block);
                 Ok(ConnectDecision::Block)
             }
@@ -326,6 +383,27 @@ impl ClientProxySelector {
         resolved_ip: Option<u128>,
         resolver: &Arc<dyn Resolver>,
     ) -> std::io::Result<ConnectDecision<'a>> {
+        debug!("[ROUTING] Evaluating (uncached): {} with {} rules", location, self.rules.len());
+
+        // Geo routing check - before mask rules
+        // CN (China) traffic → Direct, everything else → fall through to mask rules
+        if let Some(geo_matcher) = &self.geo_matcher {
+            let host = location_to_host(&location);
+            if let Some(geo_action) = geo_matcher.judge(&host) {
+                match geo_action {
+                    crate::geo_routing::RouteAction::Direct => {
+                        // CN traffic - route directly
+                        debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
+                        return Ok(ConnectDecision::Direct { remote_location: location });
+                    }
+                    crate::geo_routing::RouteAction::Proxy => {
+                        // Non-CN traffic - fall through to mask rules
+                        debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
+                    }
+                }
+            }
+        }
+
         match match_rule(
             &self.rules,
             &location,
@@ -335,8 +413,14 @@ impl ClientProxySelector {
         )
         .await?
         {
-            Some((_rule_index, rule)) => Ok(rule.action.to_decision(location)),
-            None => Ok(ConnectDecision::Block),
+            Some((rule_index, rule)) => {
+                debug!("[ROUTING] {} -> ALLOW (rule #{}, masks: {:?})", location, rule_index, rule.masks);
+                Ok(rule.action.to_decision(location))
+            }
+            None => {
+                debug!("[ROUTING] {} -> BLOCK (no matching rule)", location);
+                Ok(ConnectDecision::Block)
+            }
         }
     }
 
@@ -351,6 +435,7 @@ impl ClientProxySelector {
             CachedDecision::Allow(rule_index) => {
                 self.rules[rule_index].action.to_decision(location)
             }
+            CachedDecision::Direct => ConnectDecision::Direct { remote_location: location },
             CachedDecision::Block => ConnectDecision::Block,
         }
     }
@@ -407,6 +492,16 @@ fn matches_domain(base_domain: &str, hostname: &str) -> bool {
     }
 }
 
+/// Convert a NetLocation to a url::Host for geo routing matching.
+#[inline]
+fn location_to_host(location: &NetLocation) -> url::Host {
+    match location.address() {
+        Address::Ipv4(addr) => url::Host::Ipv4(*addr),
+        Address::Ipv6(addr) => url::Host::Ipv6(*addr),
+        Address::Hostname(hostname) => url::Host::Domain(hostname.clone()),
+    }
+}
+
 /// Returns the matching rule and its index in the rules Vec.
 #[inline]
 async fn match_rule<'a>(
@@ -417,7 +512,8 @@ async fn match_rule<'a>(
     resolve_rule_hostnames: bool,
 ) -> std::io::Result<Option<(usize, &'a ConnectRule)>> {
     for (rule_index, rule) in rules.iter().enumerate() {
-        for mask in rule.masks.iter() {
+        debug!("[ROUTING] Checking rule #{} with {} masks", rule_index, rule.masks.len());
+        for (mask_idx, mask) in rule.masks.iter().enumerate() {
             match match_mask(
                 mask,
                 location,
@@ -429,8 +525,10 @@ async fn match_rule<'a>(
             {
                 Ok(is_match) => {
                     if is_match {
-                        debug!("Found matching mask for {location} -> {mask:?}");
+                        debug!("[ROUTING] MATCHED: rule #{} mask #{}: {} -> {:?}", rule_index, mask_idx, location, mask);
                         return Ok(Some((rule_index, rule)));
+                    } else {
+                        debug!("[ROUTING] No match: rule #{} mask #{}: {} -> {:?}", rule_index, mask_idx, location, mask);
                     }
                 }
                 Err(MatchMaskError::Fatal(e)) => {
@@ -444,6 +542,7 @@ async fn match_rule<'a>(
             }
         }
     }
+    debug!("[ROUTING] No rule matched for {}", location);
     Ok(None)
 }
 

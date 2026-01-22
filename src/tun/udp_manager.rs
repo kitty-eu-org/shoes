@@ -399,6 +399,10 @@ async fn create_connection(
                 .await?;
             Ok(stream)
         }
+        ConnectDecision::Direct { remote_location } => {
+            // Direct connection - connect without proxy
+            crate::client_proxy_chain::connect_direct_udp(resolver, remote_location).await
+        }
         ConnectDecision::Block => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "destination blocked",
