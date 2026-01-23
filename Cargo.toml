@@ -26,35 +26,35 @@ default = []
 ffi = []  # Enable FFI module for non-Android builds
 
 [dependencies]
-async-trait = "*"
+async-trait = "0.1"
 # v2ray-router for geo routing - using git with fixed commit
 v2ray-router = { git = "https://github.com/fagao-ai/v2ray-router", rev = "f38d37d1" }
 # Force thiserror 1.x for compatibility with kitty project
 thiserror = "1.0"
-aws-lc-rs = { version = "*", default-features = false }
-base64 = "*"
-blake3 = "*"
-bytes = "*"
-h2 = "*"
-hyper = { version = "*", features = ["server", "http1", "http2"] }
-hyper-util = { version = "*", features = ["tokio", "server"] }
-http-body-util = "*"
-dashmap = "*"
-digest = "*"
-env_logger = "*"
-futures = "*"
-h3 = "*"
-h3-quinn = "*"
-http = "*"
-indexmap = "*"
-log = { version = "*", features = ["release_max_level_info"] }
-lru = "*"
-md-5 = "*"
-memchr = "*"
-mime_guess = "*"
-notify = "*"
-parking_lot = "*"
-percent-encoding = "*"
+aws-lc-rs = { version = "1", default-features = false }
+base64 = "0.22"
+blake3 = "1"
+bytes = "1"
+h2 = "0.4"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server"] }
+http-body-util = "0.1"
+dashmap = "6"
+digest = "0.10"
+env_logger = "0.11"
+futures = "0.3"
+h3 = "0.0"
+h3-quinn = "0.0"
+http = "1"
+indexmap = "2"
+log = { version = "0.4", features = ["release_max_level_info"] }
+lru = "0.12"
+md-5 = "0.10"
+memchr = "2"
+mime_guess = "2"
+notify = "8"
+parking_lot = "0.12"
+percent-encoding = "2"
 prost = "0.12"
 # CIDR utilities for geo IP matching
 cidr = "0.2"
@@ -65,19 +65,19 @@ addr = "0.15"
 url = "2.5"
 # Regex for geosite matching
 regex = "1"
-quinn = { version = "*", default-features = false, features = ["log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
-rand = "*"
-rand_core = "*"
-rcgen = { version = "*", default-features = false, features = ["aws_lc_rs", "pem"] }
-rustc-hash = "*"
-rust-argon2 = "*"
-rustls = "*"
-serde = { version = "*", features = ["derive", "std"] }
-subtle = "*"
-serde_yaml = "*"
-sha3 = "*"
-socket2 = "*"
-tokio = { version = "*", features = [
+quinn = { version = "0.11", default-features = false, features = ["log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
+rand = "0.9"
+rand_core = "0.9"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+rustc-hash = "2"
+rust-argon2 = "1"
+rustls = "0.23"
+serde = { version = "1", features = ["derive", "std"] }
+subtle = "2"
+serde_yaml = "0.9"
+sha3 = "0.10"
+socket2 = "0.6"
+tokio = { version = "1", features = [
     "fs",
     "io-util",
     "macros",
@@ -86,23 +86,23 @@ tokio = { version = "*", features = [
     "sync",
     "time",
 ] }
-tokio-util = { version = "*", features = ["time"] }
-webpki-roots = { version = "*" }
+tokio-util = { version = "0.7", features = ["time"] }
+webpki-roots = { version = "1" }
 
 # TUN device support (for VPN mode)
 tun = { version = "0.8", features = ["async"] }
 smoltcp = { version = "0.12", default-features = false, features = ["std", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-icmp", "socket-udp", "socket-tcp", "socket-tcp-cubic", "phy-tuntap_interface", "assembler-max-segment-count-32"] }
 etherparse = "0.16"
 
-x509-parser = { version = "*", default-features = false, features = ["verify-aws"] }
+x509-parser = { version = "0.15", default-features = false, features = ["verify"] }
 libc = "0.2.179"
 
 [dev-dependencies]
-tempfile = "*"
-rustls-pemfile = "*"
-rcgen = { version = "*", default-features = false, features = ["aws_lc_rs", "pem"] }
-tokio-rustls = "*"
-serde_json = "*"
+tempfile = "3"
+rustls-pemfile = "2"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tokio-rustls = "0.26"
+serde_json = "1"
 
 # jemalloc for better memory performance (not supported on Windows MSVC or iOS)
 [target.'cfg(not(any(target_env = "msvc", target_os = "ios")))'.dependencies]
@@ -118,4 +118,3 @@ chrono = "0.4"
 opt-level = 3
 lto = "fat"
 strip = true
-
