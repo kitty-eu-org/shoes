@@ -11,7 +11,7 @@ use crate::config::{
     WebsocketClientConfig,
 };
 use crate::config::server::GeoRoutingConfig;
-use crate::geo_routing::GeoMatcher;
+use crate::geo_routing::Router;
 use crate::http_handler::HttpTcpClientHandler;
 use crate::naiveproxy::NaiveProxyTcpClientHandler;
 use crate::port_forward_handler::PortForwardClientHandler;
@@ -361,15 +361,11 @@ pub fn create_tcp_client_proxy_selector_with_geo(
     // Create geo matcher if config is provided
     let geo_matcher = geo_routing_config
         .and_then(|config| {
-            match GeoMatcher::from_dat_files(
-                config.geoip_file.as_deref(),
-                config.geosite_file.as_deref(),
+            match Router::from_paths(
+                config.geosite_file.as_deref().unwrap_or("geosite.dat"),
+                config.geoip_file.as_deref().unwrap_or("geoip.dat"),
             ) {
-                Ok(Some(matcher)) => Some(Arc::new(matcher)),
-                Ok(None) => {
-                    log::warn!("Geo routing config provided but no .dat files loaded, geo routing disabled");
-                    None
-                }
+                Ok(router) => Some(Arc::new(router)),
                 Err(e) => {
                     log::warn!("Failed to load geo data for geo routing: {}. Geo routing disabled.", e);
                     None

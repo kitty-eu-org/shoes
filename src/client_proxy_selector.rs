@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::address::{Address, NetLocation};
 use crate::address::{AddressMask, NetLocationMask};
 use crate::client_proxy_chain::ClientChainGroup;
-use crate::geo_routing::GeoMatcher;
+use crate::geo_routing::Router;
 use crate::resolver::{Resolver, resolve_single_address};
 
 /// Cache key for routing decisions.
@@ -179,7 +179,6 @@ impl ConnectAction {
 const CACHE_RULE_THRESHOLD: usize = 16;
 
 // TODO: Replace linear rule matching with radix set/trie
-#[derive(Debug)]
 pub struct ClientProxySelector {
     rules: Vec<ConnectRule>,
     /// If false, hostname rules will not trigger DNS resolution to match against IP-based
@@ -192,11 +191,22 @@ pub struct ClientProxySelector {
     cache: Option<RoutingCache>,
     /// Optional geo matcher for Clash-style routing based on GeoIP and GeoSite.
     /// If Some, CN (China) traffic will be routed directly, other traffic through proxy.
-    geo_matcher: Option<Arc<GeoMatcher>>,
+    geo_matcher: Option<Arc<Router>>,
 }
 
 unsafe impl Send for ClientProxySelector {}
 unsafe impl Sync for ClientProxySelector {}
+
+impl std::fmt::Debug for ClientProxySelector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientProxySelector")
+            .field("rules", &self.rules)
+            .field("resolve_rule_hostnames", &self.resolve_rule_hostnames)
+            .field("cache", &self.cache)
+            .field("geo_matcher", &self.geo_matcher.as_ref().map(|_| "<Router>"))
+            .finish()
+    }
+}
 
 #[derive(Debug)]
 pub enum ConnectDecision<'a> {
@@ -226,7 +236,7 @@ impl ClientProxySelector {
     ///   against IP-based destinations. If false (default), hostname rules only match hostname
     ///   destinations directly. Setting this to false is more performant for large rule sets.
     /// * `geo_matcher` - Optional geo matcher for Clash-style routing (CN → Direct, others → Proxy)
-    pub fn with_options(rules: Vec<ConnectRule>, resolve_rule_hostnames: bool, geo_matcher: Option<Arc<GeoMatcher>>) -> Self {
+    pub fn with_options(rules: Vec<ConnectRule>, resolve_rule_hostnames: bool, geo_matcher: Option<Arc<Router>>) -> Self {
         Self::with_options_and_cache_size(
             rules,
             resolve_rule_hostnames,
@@ -255,7 +265,7 @@ impl ClientProxySelector {
     pub fn with_options_and_cache_size(
         rules: Vec<ConnectRule>,
         resolve_rule_hostnames: bool,
-        geo_matcher: Option<Arc<GeoMatcher>>,
+        geo_matcher: Option<Arc<Router>>,
         cache_capacity: usize,
     ) -> Self {
         // Enable caching if:
@@ -277,7 +287,7 @@ impl ClientProxySelector {
     }
 
     /// Set the geo matcher for Clash-style routing.
-    pub fn set_geo_matcher(&mut self, geo_matcher: Option<Arc<GeoMatcher>>) {
+    pub fn set_geo_matcher(&mut self, geo_matcher: Option<Arc<Router>>) {
         self.geo_matcher = geo_matcher;
         // Update cache based on new geo matcher presence
         if self.geo_matcher.is_some() && self.cache.is_none() {
@@ -286,7 +296,7 @@ impl ClientProxySelector {
     }
 
     /// Get reference to the geo matcher.
-    pub fn geo_matcher(&self) -> Option<&Arc<GeoMatcher>> {
+    pub fn geo_matcher(&self) -> Option<&Arc<Router>> {
         self.geo_matcher.as_ref()
     }
 
@@ -324,18 +334,23 @@ impl ClientProxySelector {
         // CN (China) traffic → Direct, everything else → fall through to mask rules
         if let Some(geo_matcher) = &self.geo_matcher {
             let host = location_to_host(&location);
-            if let Some(geo_action) = geo_matcher.judge(&host) {
-                match geo_action {
-                    crate::geo_routing::RouteAction::Direct => {
-                        // CN traffic - route directly
-                        debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
-                        cache.insert(&location, CachedDecision::Direct);
-                        return Ok(ConnectDecision::Direct { remote_location: location });
-                    }
-                    crate::geo_routing::RouteAction::Proxy => {
-                        // Non-CN traffic - fall through to mask rules
-                        debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
-                    }
+            let geo_action = crate::geo_routing::judge(geo_matcher, &host);
+            match geo_action {
+                crate::geo_routing::RouteAction::Reject => {
+                    // Reject traffic (ads, etc.)
+                    debug!("[ROUTING] {} -> REJECT (geo routing)", location);
+                    cache.insert(&location, CachedDecision::Block);
+                    return Ok(ConnectDecision::Block);
+                }
+                crate::geo_routing::RouteAction::Direct => {
+                    // CN traffic - route directly
+                    debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
+                    cache.insert(&location, CachedDecision::Direct);
+                    return Ok(ConnectDecision::Direct { remote_location: location });
+                }
+                crate::geo_routing::RouteAction::Proxy => {
+                    // Non-CN traffic - fall through to mask rules
+                    debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
                 }
             }
         }
@@ -389,17 +404,21 @@ impl ClientProxySelector {
         // CN (China) traffic → Direct, everything else → fall through to mask rules
         if let Some(geo_matcher) = &self.geo_matcher {
             let host = location_to_host(&location);
-            if let Some(geo_action) = geo_matcher.judge(&host) {
-                match geo_action {
-                    crate::geo_routing::RouteAction::Direct => {
-                        // CN traffic - route directly
-                        debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
-                        return Ok(ConnectDecision::Direct { remote_location: location });
-                    }
-                    crate::geo_routing::RouteAction::Proxy => {
-                        // Non-CN traffic - fall through to mask rules
-                        debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
-                    }
+            let geo_action = crate::geo_routing::judge(geo_matcher, &host);
+            match geo_action {
+                crate::geo_routing::RouteAction::Reject => {
+                    // Reject traffic (ads, etc.)
+                    debug!("[ROUTING] {} -> REJECT (geo routing)", location);
+                    return Ok(ConnectDecision::Block);
+                }
+                crate::geo_routing::RouteAction::Direct => {
+                    // CN traffic - route directly
+                    debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
+                    return Ok(ConnectDecision::Direct { remote_location: location });
+                }
+                crate::geo_routing::RouteAction::Proxy => {
+                    // Non-CN traffic - fall through to mask rules
+                    debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
                 }
             }
         }
