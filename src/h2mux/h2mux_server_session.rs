@@ -448,6 +448,19 @@ async fn handle_h2mux_tcp(
 
             result
         }
+        ConnectDecision::Direct { remote_location } => {
+            debug!("H2MUX TCP: connecting directly to {}", remote_location);
+
+            let mut client_stream = crate::client_proxy_chain::connect_direct_tcp(&resolver, remote_location).await?;
+
+            // Bidirectional copy
+            let result = copy_bidirectional(&mut stream, &mut *client_stream, false, false).await;
+
+            let _ = stream.shutdown().await;
+            let _ = client_stream.shutdown().await;
+
+            result
+        }
         ConnectDecision::Block => {
             debug!("H2MUX TCP: blocked by rules: {}", destination);
             let _ = stream
@@ -482,6 +495,15 @@ async fn handle_h2mux_udp(
             let client_stream = chain_group
                 .connect_udp_bidirectional(&resolver, remote_location)
                 .await?;
+
+            // Wrap in VlessMessageStream for length-prefixed packets
+            let server_stream = VlessMessageStream::new(Box::new(stream));
+
+            run_udp_copy(Box::new(server_stream), client_stream, false, false).await
+        }
+        ConnectDecision::Direct { remote_location } => {
+            // Direct connection
+            let client_stream = crate::client_proxy_chain::connect_direct_udp(&resolver, remote_location).await?;
 
             // Wrap in VlessMessageStream for length-prefixed packets
             let server_stream = VlessMessageStream::new(Box::new(stream));

@@ -2475,6 +2475,7 @@ mod tests {
                 tcp_settings: None,
                 quic_settings: None,
                 rules: direct_allow_rule(),
+                geo_routing: None,
                 dns: Some(DnsConfig {
                     servers: NoneOrSome::One(DnsServerSpec::Simple("my-dns".to_string())),
                 }),
@@ -2523,6 +2524,7 @@ mod tests {
                 tcp_settings: None,
                 quic_settings: None,
                 rules: direct_allow_rule(),
+                geo_routing: None,
                 dns: Some(DnsConfig {
                     servers: NoneOrSome::Some(vec![
                         DnsServerSpec::Simple("base-dns".to_string()), // group ref
@@ -2583,6 +2585,7 @@ mod tests {
                 tcp_settings: None,
                 quic_settings: None,
                 rules: direct_allow_rule(),
+                geo_routing: None,
                 dns: Some(DnsConfig {
                     servers: NoneOrSome::Some(vec![
                         DnsServerSpec::Simple("fast-dns".to_string()),
@@ -2634,6 +2637,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: direct_allow_rule(),
+            geo_routing: None,
             dns: Some(DnsConfig {
                 servers: NoneOrSome::One(DnsServerSpec::Simple("nonexistent-dns".to_string())),
             }),

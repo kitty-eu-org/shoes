@@ -190,6 +190,10 @@ pub struct ServerConfig {
     /// Geo routing configuration for Clash-style traffic diversion
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo_routing: Option<GeoRoutingConfig>,
+    /// DNS configuration for this server (optional).
+    /// Can reference a dns_group by name or specify inline DNS servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<super::dns::DnsConfig>,
 }
 
 impl<'de> serde::de::Deserialize<'de> for ServerConfig {
@@ -204,7 +208,7 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             .as_mapping()
             .ok_or_else(|| Error::custom("ServerConfig must be a YAML mapping"))?;
 
-        // Valid fields: address/path (bind_location), protocol, transport, tcp_settings, quic_settings, rules/rule, geo_routing
+        // Valid fields: address/path (bind_location), protocol, transport, tcp_settings, quic_settings, rules/rule, geo_routing, dns
         const VALID_FIELDS: &[&str] = &[
             "address",
             "path", // BindLocation (flattened)
@@ -215,6 +219,7 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             "rules",
             "rule",
             "geo_routing",
+            "dns",
         ];
 
         // Check for unknown fields
@@ -296,6 +301,14 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             .transpose()
             .map_err(|e| Error::custom(format!("invalid geo_routing: {e}")))?;
 
+        // Parse dns (optional, skip if null)
+        let dns: Option<super::dns::DnsConfig> = map
+            .get("dns")
+            .filter(|v| !v.is_null())
+            .map(|v| serde_yaml::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| Error::custom(format!("invalid dns: {e}")))?;
+
         Ok(ServerConfig {
             bind_location,
             protocol,
@@ -304,6 +317,7 @@ impl<'de> serde::de::Deserialize<'de> for ServerConfig {
             quic_settings,
             rules,
             geo_routing,
+            dns,
         })
     }
 }
@@ -862,6 +876,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -880,6 +895,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -898,6 +914,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -924,6 +941,7 @@ mod tests {
             }),
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -944,6 +962,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -994,6 +1013,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -1012,6 +1032,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -1037,6 +1058,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -1056,6 +1078,7 @@ mod tests {
             quic_settings: None,
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -1080,6 +1103,7 @@ mod tests {
             }),
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 
@@ -1105,6 +1129,7 @@ mod tests {
             }),
             rules: NoneOrSome::None,
             dns: None,
+            geo_routing: None,
         }
     }
 

@@ -67,6 +67,8 @@ mod crypto;
 
 /// Geo routing module for Clash-style traffic diversion based on GeoIP and GeoSite.
 pub mod geo_routing;
+pub mod dns;
+mod h2mux;
 mod http_handler;
 mod hysteria2_client;
 mod hysteria2_protocol;

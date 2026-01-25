@@ -12,6 +12,7 @@ use crate::config::{
 };
 use crate::config::server::GeoRoutingConfig;
 use crate::geo_routing::Router;
+use crate::h2mux::H2MuxClientHandler;
 use crate::http_handler::HttpTcpClientHandler;
 use crate::naiveproxy::NaiveProxyTcpClientHandler;
 use crate::port_forward_handler::PortForwardClientHandler;

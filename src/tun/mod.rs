@@ -118,7 +118,7 @@ pub async fn run_tun_server(
     let (udp_to_stack_tx, udp_to_stack_rx) = mpsc::unbounded_channel::<PacketBuffer>();
     tcp_stack.set_udp_response_tx(udp_to_stack_rx);
 
-    let (tcp_conn_tx, mut tcp_conn_rx) = mpsc::unbounded_channel::<NewTcpConnection>();
+    let (tcp_conn_tx, mut tcp_conn_rx) = mpsc::unbounded_channel::<NewTcpConnectionDirect>();
     tcp_stack.set_new_conn_tx(tcp_conn_tx);
 
     let tcp_task: Option<JoinHandle<()>> = if config.tcp_enabled {

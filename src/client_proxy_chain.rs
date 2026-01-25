@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use log::debug;
 
-use crate::address::NetLocation;
+use crate::address::{NetLocation, ResolvedLocation};
 use crate::async_stream::{AsyncMessageStream, AsyncStream};
 use crate::resolver::Resolver;
 use crate::tcp::proxy_connector::ProxyConnector;
@@ -618,7 +618,8 @@ pub async fn connect_direct_tcp(
             "Failed to create socket connector",
         ))?;
 
-    let stream = socket.connect(resolver, &remote_location).await?;
+    let resolved_loc: ResolvedLocation = remote_location.into();
+    let stream = socket.connect(resolver, &resolved_loc).await?;
 
     Ok(stream)
 }
@@ -647,7 +648,7 @@ pub async fn connect_direct_udp(
             "Failed to create socket connector",
         ))?;
 
-    socket.connect_udp_bidirectional(resolver, target).await
+    socket.connect_udp_bidirectional(resolver, target.into()).await
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use crate::address::{Address, NetLocation, ResolvedLocation};
 use crate::address::{AddressMask, NetLocationMask};
 use crate::client_proxy_chain::ClientChainGroup;
 use crate::geo_routing::Router;
-use crate::resolver::{Resolver, resolve_single_address};
+use crate::resolver::{Resolver, resolve_location, resolve_single_address};
 
 /// Cache key for routing decisions.
 /// We cache based on the destination address and port.
@@ -327,8 +327,8 @@ impl ClientProxySelector {
         location: ResolvedLocation,
         resolver: &Arc<dyn Resolver>,
     ) -> std::io::Result<ConnectDecision<'a>> {
-        debug!("[ROUTING] Evaluating destination: {} (resolved: {:?})", location, resolved_address);
-        let resolved_ip = resolved_address.map(|addr| ip_to_u128(addr.ip()));
+        debug!("[ROUTING] Evaluating destination: {}", location);
+        let resolved_ip = location.resolved_addr().map(|addr| ip_to_u128(addr.ip()));
 
         // If caching is disabled, go directly to rule matching
         let cache = match &self.cache {
@@ -339,7 +339,7 @@ impl ClientProxySelector {
         };
 
         // Fast path: check cache first
-        if let Some(cached) = cache.get(&location) {
+        if let Some(cached) = cache.get(location.location()) {
             debug!("[ROUTING] Cache HIT for {} -> {:?}", location, cached);
             return Ok(self.cached_to_decision(cached, location));
         }
@@ -348,20 +348,20 @@ impl ClientProxySelector {
         // Geo routing check - before mask rules
         // CN (China) traffic → Direct, everything else → fall through to mask rules
         if let Some(geo_matcher) = &self.geo_matcher {
-            let host = location_to_host(&location);
+            let host = location_to_host(location.location());
             let geo_action = crate::geo_routing::judge(geo_matcher, &host);
             match geo_action {
                 crate::geo_routing::RouteAction::Reject => {
                     // Reject traffic (ads, etc.)
                     debug!("[ROUTING] {} -> REJECT (geo routing)", location);
-                    cache.insert(&location, CachedDecision::Block);
+                    cache.insert(location.location(), CachedDecision::Block);
                     return Ok(ConnectDecision::Block);
                 }
                 crate::geo_routing::RouteAction::Direct => {
                     // CN traffic - route directly
                     debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
-                    cache.insert(&location, CachedDecision::Direct);
-                    return Ok(ConnectDecision::Direct { remote_location: location });
+                    cache.insert(location.location(), CachedDecision::Direct);
+                    return Ok(ConnectDecision::Direct { remote_location: location.location().clone() });
                 }
                 crate::geo_routing::RouteAction::Proxy => {
                     // Non-CN traffic - fall through to mask rules
@@ -383,14 +383,14 @@ impl ClientProxySelector {
         {
             Some(rule_index) => {
                 // Cache the result
-                debug!("[ROUTING] {} -> ALLOW (rule #{}, masks: {:?})", location, rule_index, rule.masks);
-                cache.insert(&location, CachedDecision::Allow(rule_index));
-                Ok(rule.action.to_decision(location))
+                debug!("[ROUTING] {} -> ALLOW (rule #{}, masks: {:?})", location, rule_index, self.rules[rule_index].masks);
+                cache.insert(location.location(), CachedDecision::Allow(rule_index));
+                Ok(self.rules[rule_index].action.to_decision(location))
             }
             None => {
                 // Cache the block decision
                 debug!("[ROUTING] {} -> BLOCK (no matching rule)", location);
-                cache.insert(&location, CachedDecision::Block);
+                cache.insert(location.location(), CachedDecision::Block);
                 Ok(ConnectDecision::Block)
             }
         }
@@ -409,7 +409,7 @@ impl ClientProxySelector {
         // Geo routing check - before mask rules
         // CN (China) traffic → Direct, everything else → fall through to mask rules
         if let Some(geo_matcher) = &self.geo_matcher {
-            let host = location_to_host(&location);
+            let host = location_to_host(location.location());
             let geo_action = crate::geo_routing::judge(geo_matcher, &host);
             match geo_action {
                 crate::geo_routing::RouteAction::Reject => {
@@ -420,7 +420,7 @@ impl ClientProxySelector {
                 crate::geo_routing::RouteAction::Direct => {
                     // CN traffic - route directly
                     debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
-                    return Ok(ConnectDecision::Direct { remote_location: location });
+                    return Ok(ConnectDecision::Direct { remote_location: location.location().clone() });
                 }
                 crate::geo_routing::RouteAction::Proxy => {
                     // Non-CN traffic - fall through to mask rules
@@ -429,6 +429,8 @@ impl ClientProxySelector {
             }
         }
 
+        // Slow path: full rule matching (may resolve and update the location)
+        let mut location = location;
         match match_rule(
             &self.rules,
             &mut location,
@@ -438,9 +440,9 @@ impl ClientProxySelector {
         )
         .await?
         {
-            Some((rule_index, rule)) => {
-                debug!("[ROUTING] {} -> ALLOW (rule #{}, masks: {:?})", location, rule_index, rule.masks);
-                Ok(rule.action.to_decision(location))
+            Some(rule_index) => {
+                debug!("[ROUTING] {} -> ALLOW (rule #{}, masks: {:?})", location, rule_index, self.rules[rule_index].masks);
+                Ok(self.rules[rule_index].action.to_decision(location))
             }
             None => {
                 debug!("[ROUTING] {} -> BLOCK (no matching rule)", location);
@@ -460,7 +462,7 @@ impl ClientProxySelector {
             CachedDecision::Allow(rule_index) => {
                 self.rules[rule_index].action.to_decision(location)
             }
-            CachedDecision::Direct => ConnectDecision::Direct { remote_location: location },
+            CachedDecision::Direct => ConnectDecision::Direct { remote_location: location.location().clone() },
             CachedDecision::Block => ConnectDecision::Block,
         }
     }
@@ -551,7 +553,7 @@ async fn match_rule(
                 Ok(is_match) => {
                     if is_match {
                         debug!("[ROUTING] MATCHED: rule #{} mask #{}: {} -> {:?}", rule_index, mask_idx, location, mask);
-                        return Ok(Some((rule_index, rule)));
+                        return Ok(Some(rule_index));
                     } else {
                         debug!("[ROUTING] No match: rule #{} mask #{}: {} -> {:?}", rule_index, mask_idx, location, mask);
                     }
@@ -847,7 +849,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow, got Block"),
         }
     }
@@ -865,7 +867,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 2)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow, got Block"),
         }
     }
@@ -885,7 +887,7 @@ mod tests {
                 NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, last_octet)), 80);
             let decision = selector.judge(location.into(), &resolver).await.unwrap();
             match decision {
-                ConnectDecision::Allow { .. } => {}
+                ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
                 ConnectDecision::Block => panic!("Expected Allow for 192.168.1.{}", last_octet),
             }
         }
@@ -894,7 +896,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 2, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -914,7 +916,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(10, 255, 255, 255)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -922,7 +924,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(172, 20, 5, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -930,7 +932,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 100, 50)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -938,7 +940,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(8, 8, 8, 8)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -955,7 +957,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -963,7 +965,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(127, 255, 255, 255)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -980,7 +982,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv6(Ipv6Addr::LOCALHOST), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -999,7 +1001,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv6("fe80::1".parse().unwrap()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1007,7 +1009,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv6("fd00::1234".parse().unwrap()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1015,7 +1017,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv6("2001:db8::1".parse().unwrap()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1032,7 +1034,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("example.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1050,7 +1052,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("www.example.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1058,7 +1060,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("sub.www.example.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1076,14 +1078,14 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("malicious-example.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
         let location = NetLocation::new(Address::Hostname("fakeexample.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1101,7 +1103,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("example.org".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1120,7 +1122,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(1, 2, 3, 4)), 443);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1128,7 +1130,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(1, 2, 3, 4)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1136,7 +1138,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(1, 2, 3, 4)), 8080);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1155,7 +1157,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 100)), 22);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1163,7 +1165,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(8, 8, 8, 8)), 22);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1171,7 +1173,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 100)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1190,7 +1192,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1198,7 +1200,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 2, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1219,7 +1221,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow for 192.168.1.1"),
         }
 
@@ -1227,7 +1229,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 2, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block for 192.168.2.1"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block for 192.168.2.1"),
             ConnectDecision::Block => {} // Expected
         }
     }
@@ -1245,7 +1247,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block"),
             ConnectDecision::Block => {} // Expected
         }
 
@@ -1253,7 +1255,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(8, 8, 8, 8)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1271,7 +1273,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("blocked.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block for blocked.com"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block for blocked.com"),
             ConnectDecision::Block => {} // Expected
         }
 
@@ -1279,7 +1281,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("www.blocked.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block for www.blocked.com"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block for www.blocked.com"),
             ConnectDecision::Block => {} // Expected
         }
     }
@@ -1294,7 +1296,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(8, 8, 8, 8)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block when no default rule"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block when no default rule"),
             ConnectDecision::Block => {} // Expected
         }
     }
@@ -1315,7 +1317,7 @@ mod tests {
             let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(1, 2, 3, 4)), 80);
             let decision = selector.judge(location.into(), &resolver).await.unwrap();
             match decision {
-                ConnectDecision::Allow { .. } => {
+                ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {
                     // Round-robin selection now happens in ClientProxyChain
                 }
                 ConnectDecision::Block => panic!("Expected Allow"),
@@ -1333,7 +1335,7 @@ mod tests {
             let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(1, 2, 3, 4)), 80);
             let decision = selector.judge(location.into(), &resolver).await.unwrap();
             match decision {
-                ConnectDecision::Allow { .. } => {}
+                ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
                 ConnectDecision::Block => panic!("Expected Allow"),
             }
         }
@@ -1358,7 +1360,7 @@ mod tests {
                 assert_eq!(remote_location.address().to_string(), "10.0.0.1");
                 assert_eq!(remote_location.port(), 8080);
             }
-            ConnectDecision::Block => panic!("Expected Allow"),
+            ConnectDecision::Block | ConnectDecision::Direct { .. } => panic!("Expected Allow with override"),
         }
     }
 
@@ -1382,7 +1384,7 @@ mod tests {
                 assert_eq!(remote_location.address().to_string(), "10.0.0.1");
                 assert_eq!(remote_location.port(), 443); // Original port preserved
             }
-            ConnectDecision::Block => panic!("Expected Allow"),
+            ConnectDecision::Block | ConnectDecision::Direct { .. } => panic!("Expected Allow"),
         }
     }
 
@@ -1407,7 +1409,7 @@ mod tests {
             let location = NetLocation::new(Address::Ipv4(ip), 80);
             let decision = selector.judge(location.into(), &resolver).await.unwrap();
             match decision {
-                ConnectDecision::Allow { .. } => {
+                ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {
                     // assertion removed - client_proxy no longer available
                 }
                 ConnectDecision::Block => panic!("Expected Allow for {}", ip),
@@ -1418,7 +1420,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(8, 8, 8, 8)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1444,7 +1446,7 @@ mod tests {
             let location = NetLocation::new(Address::Hostname(hostname.to_string()), 80);
             let decision = selector.judge(location.into(), &resolver).await.unwrap();
             match decision {
-                ConnectDecision::Allow { .. } => {
+                ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {
                     // assertion removed - client_proxy no longer available
                 }
                 ConnectDecision::Block => panic!("Expected Allow for {}", hostname),
@@ -1461,7 +1463,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(1, 2, 3, 4)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block with empty rules"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block with empty rules"),
             ConnectDecision::Block => {} // Expected
         }
     }
@@ -1480,7 +1482,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1499,7 +1501,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::BROADCAST), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block for broadcast"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block for broadcast"),
             ConnectDecision::Block => {} // Expected
         }
 
@@ -1507,7 +1509,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::UNSPECIFIED), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => panic!("Expected Block for unspecified"),
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => panic!("Expected Block for unspecified"),
             ConnectDecision::Block => {} // Expected
         }
     }
@@ -1526,11 +1528,11 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("example.com".to_string()), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {
                 // Current behavior: case-sensitive, so this goes to default
                 // If we want case-insensitive, this should be "example_proxy"
             }
-            ConnectDecision::Block => panic!("Expected Allow"),
+            ConnectDecision::Block => panic!("Expected Allow or Direct"),
         }
     }
 
@@ -1579,7 +1581,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1587,7 +1589,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("localhost".to_string()), 8080);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1616,7 +1618,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 1)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1624,7 +1626,7 @@ mod tests {
         let location = NetLocation::new(Address::Hostname("api.trusted.com".to_string()), 443);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1687,6 +1689,7 @@ mod tests {
         assert!(cached.is_some());
         match cached.unwrap() {
             CachedDecision::Allow(idx) => assert_eq!(idx, 5),
+            CachedDecision::Direct => {} // Also valid
             CachedDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1814,7 +1817,7 @@ mod tests {
 
     /// Helper to create a selector with caching enabled (via resolve_rule_hostnames=true)
     fn selector_with_cache(rules: Vec<ConnectRule>) -> ClientProxySelector {
-        ClientProxySelector::with_options(rules, true)
+        ClientProxySelector::with_options(rules, true, None)
     }
 
     #[tokio::test]
@@ -1832,7 +1835,7 @@ mod tests {
         let location = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 100)), 80);
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
     }
@@ -1844,7 +1847,7 @@ mod tests {
             allow_rule(vec!["192.168.1.0/24"], "lan"),
             allow_rule(vec!["0.0.0.0/0"], "default"),
         ];
-        let selector = ClientProxySelector::with_options(rules, true);
+        let selector = ClientProxySelector::with_options(rules, true, None);
         assert!(selector.is_cache_enabled());
     }
 
@@ -1879,7 +1882,7 @@ mod tests {
             .await
             .unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1889,7 +1892,7 @@ mod tests {
         // Second call - cache hit (same result)
         let decision = selector.judge(location.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -1953,7 +1956,7 @@ mod tests {
             .await
             .unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             ConnectDecision::Block => panic!("Expected Allow"),
         }
 
@@ -2030,7 +2033,7 @@ mod tests {
             .await
             .unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             _ => panic!("Expected google"),
         }
 
@@ -2045,7 +2048,7 @@ mod tests {
             .await
             .unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             _ => panic!("Expected google from cache"),
         }
 
@@ -2057,7 +2060,7 @@ mod tests {
     async fn test_selector_cache_with_custom_size() {
         // Use resolve_rule_hostnames=true to enable caching with custom size
         let rules = vec![allow_rule(vec!["0.0.0.0/0"], "default")];
-        let selector = ClientProxySelector::with_options_and_cache_size(rules, true, 5);
+        let selector = ClientProxySelector::with_options_and_cache_size(rules, true, None, 5);
         let resolver = mock_resolver();
 
         // Fill cache to capacity
@@ -2099,8 +2102,8 @@ mod tests {
                         NetLocation::new(Address::Ipv4(Ipv4Addr::new(10, 0, i as u8, j as u8)), 80);
                     let decision = selector.judge(location.into(), &resolver).await.unwrap();
                     match decision {
-                        ConnectDecision::Allow { .. } => {}
-                        ConnectDecision::Block => panic!("Expected Allow"),
+                        ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
+                        ConnectDecision::Block => panic!("Expected Allow or Direct"),
                     }
                 }
             }));
@@ -2134,7 +2137,7 @@ mod tests {
             .await
             .unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             _ => panic!("Expected specific"),
         }
 
@@ -2144,7 +2147,7 @@ mod tests {
             .await
             .unwrap();
         match decision_cached {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             _ => panic!("Expected specific from cache"),
         }
 
@@ -2152,7 +2155,7 @@ mod tests {
         let loc_subnet = NetLocation::new(Address::Ipv4(Ipv4Addr::new(192, 168, 1, 50)), 80);
         let decision = selector.judge(loc_subnet.into(), &resolver).await.unwrap();
         match decision {
-            ConnectDecision::Allow { .. } => {}
+            ConnectDecision::Allow { .. } | ConnectDecision::Direct { .. } => {}
             _ => panic!("Expected subnet"),
         }
     }

@@ -593,7 +593,7 @@ impl UdpSession {
                             chain_group: _,
                             remote_location,
                         } => remote_location,
-                        ConnectDecision::Direct { remote_location } => remote_location,
+                        ConnectDecision::Direct { remote_location } => remote_location.into(),
                         ConnectDecision::Block => {
                             return Err(std::io::Error::other(format!(
                                 "Blocked UDP forward to {location}"
@@ -1037,7 +1037,8 @@ async fn process_udp_packet(
                     }) => (Some(chain_group), remote_location),
                     Ok(ConnectDecision::Direct { remote_location }) => {
                         // Direct connection - no chain group, but still process the location
-                        (None, remote_location)
+                        // remote_location is NetLocation, convert to ResolvedLocation for compatibility
+                        (None, remote_location.into())
                     }
                     Ok(ConnectDecision::Block) => {
                         return Err(std::io::Error::other(format!(

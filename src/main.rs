@@ -9,6 +9,8 @@ mod copy_bidirectional;
 mod copy_bidirectional_message;
 mod crypto;
 mod geo_routing;
+mod dns;
+mod h2mux;
 mod http_handler;
 mod hysteria2_client;
 mod hysteria2_protocol;

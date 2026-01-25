@@ -19,7 +19,7 @@ use crate::config::{BindLocation, Config, ConfigSelection, ServerConfig, TcpConf
 use crate::copy_bidirectional::copy_bidirectional;
 use crate::copy_bidirectional_message::copy_bidirectional_message;
 use crate::quic_server::start_quic_servers;
-use crate::resolver::Resolver;
+use crate::resolver::{NativeResolver, Resolver};
 use crate::routing::{ServerStream, run_udp_routing};
 use crate::socket_util::{new_tcp_listener, set_tcp_keepalive};
 use crate::tcp::tcp_handler::{TcpClientSetupResult, TcpServerHandler, TcpServerSetupResult};
@@ -305,7 +305,7 @@ pub async fn setup_client_tcp_stream(
 ) -> std::io::Result<Option<Box<dyn AsyncStream>>> {
     debug!("[TCP] Routing TCP connection to {}", remote_location);
     let action = client_proxy_selector
-        .judge(remote_location.clone(), &resolver)
+        .judge(remote_location.clone().into(), &resolver)
         .await?;
     debug!("[TCP] Routing decision for {} -> {:?}", remote_location, action);
 
