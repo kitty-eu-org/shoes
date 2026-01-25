@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use aws_lc_rs::digest::SHA224;
+use log::debug;
 use subtle::ConstantTimeEq;
 use tokio::io::AsyncWriteExt;
 
-use crate::address::NetLocation;
+use crate::address::{Address, ResolvedLocation};
 use crate::async_stream::AsyncStream;
 use crate::client_proxy_selector::ClientProxySelector;
 use crate::config::ShadowsocksConfig;
+use crate::h2mux::{MUX_DESTINATION_HOST, MUX_DESTINATION_PORT, handle_h2mux_session};
+use crate::resolver::Resolver;
 use crate::shadowsocks::{
     DefaultKey, ShadowsocksCipher, ShadowsocksKey, ShadowsocksStream, ShadowsocksStreamType,
 };
@@ -31,6 +34,8 @@ pub struct TrojanTcpHandler {
     shadowsocks_data: Option<ShadowsocksData>,
     /// Proxy selector for server handler use. None when used as client handler.
     proxy_selector: Option<Arc<ClientProxySelector>>,
+    /// DNS resolver for h2mux sessions. None when used as client handler.
+    resolver: Option<Arc<dyn Resolver>>,
 }
 
 impl TrojanTcpHandler {
@@ -39,19 +44,26 @@ impl TrojanTcpHandler {
         password: &str,
         shadowsocks_config: &Option<ShadowsocksConfig>,
         proxy_selector: Arc<ClientProxySelector>,
+        resolver: Arc<dyn Resolver>,
     ) -> Self {
-        Self::new_inner(password, shadowsocks_config, Some(proxy_selector))
+        Self::new_inner(
+            password,
+            shadowsocks_config,
+            Some(proxy_selector),
+            Some(resolver),
+        )
     }
 
     /// Create a new handler for client use (no proxy_selector needed)
     pub fn new_client(password: &str, shadowsocks_config: &Option<ShadowsocksConfig>) -> Self {
-        Self::new_inner(password, shadowsocks_config, None)
+        Self::new_inner(password, shadowsocks_config, None, None)
     }
 
     fn new_inner(
         password: &str,
         shadowsocks_config: &Option<ShadowsocksConfig>,
         proxy_selector: Option<Arc<ClientProxySelector>>,
+        resolver: Option<Arc<dyn Resolver>>,
     ) -> Self {
         let password_hash = create_password_hash(password);
         let shadowsocks_data = shadowsocks_config.as_ref().map(|config| match config {
@@ -77,6 +89,7 @@ impl TrojanTcpHandler {
             password_hash,
             shadowsocks_data,
             proxy_selector,
+            resolver,
         }
     }
 }
@@ -146,6 +159,35 @@ impl TcpServerHandler for TrojanTcpHandler {
             )));
         }
 
+        // Checks for h2mux magic destination
+        if let Address::Hostname(host) = remote_location.address() {
+            if host == MUX_DESTINATION_HOST && remote_location.port() == MUX_DESTINATION_PORT {
+                let proxy_selector = self
+                    .proxy_selector
+                    .clone()
+                    .expect("proxy_selector required for server handler");
+                let resolver = self.resolver.clone().expect("resolver required for h2mux");
+
+                let initial_data = stream_reader.unparsed_data_owned();
+
+                tokio::spawn(async move {
+                    if let Err(e) = handle_h2mux_session(
+                        server_stream,
+                        initial_data,
+                        false,
+                        proxy_selector,
+                        resolver,
+                    )
+                    .await
+                    {
+                        debug!("Trojan h2mux session ended: {}", e);
+                    }
+                });
+
+                return Ok(TcpServerSetupResult::AlreadyHandled);
+            }
+        }
+
         Ok(TcpServerSetupResult::TcpForward {
             remote_location,
             stream: server_stream,
@@ -167,7 +209,7 @@ impl TcpClientHandler for TrojanTcpHandler {
     async fn setup_client_tcp_stream(
         &self,
         mut client_stream: Box<dyn AsyncStream>,
-        remote_location: NetLocation,
+        remote_location: ResolvedLocation,
     ) -> std::io::Result<TcpClientSetupResult> {
         if let Some(ShadowsocksData {
             ref cipher,
@@ -187,7 +229,7 @@ impl TcpClientHandler for TrojanTcpHandler {
         write_all(&mut client_stream, &self.password_hash).await?;
         write_all(&mut client_stream, &CRLF_BYTES).await?;
         write_all(&mut client_stream, &[CMD_CONNECT]).await?;
-        let location_bytes = write_location_to_vec(&remote_location);
+        let location_bytes = write_location_to_vec(remote_location.location());
         write_all(&mut client_stream, &location_bytes).await?;
         write_all(&mut client_stream, &CRLF_BYTES).await?;
         client_stream.flush().await?;

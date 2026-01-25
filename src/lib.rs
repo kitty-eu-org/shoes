@@ -79,7 +79,7 @@ mod quic_server;
 mod quic_stream;
 mod reality;
 mod reality_client_handler;
-mod resolver;
+pub mod resolver;
 mod routing;
 mod rustls_config_util;
 mod rustls_connection_util;

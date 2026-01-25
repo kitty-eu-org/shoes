@@ -8,6 +8,7 @@ use crate::address::NetLocation;
 use crate::option_util::{NoneOrSome, OneOrSome};
 
 use super::common::{default_reality_server_short_ids, default_reality_time_diff, default_true};
+use super::dns::DnsConfig;
 use super::rules::{ClientChainHop, RuleConfig};
 use super::selection::ConfigSelection;
 use super::shadowsocks::ShadowsocksConfig;
@@ -860,6 +861,7 @@ mod tests {
             tcp_settings: Some(TcpConfig { no_delay: true }),
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -877,6 +879,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -894,6 +897,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -919,6 +923,7 @@ mod tests {
                 num_endpoints: 1,
             }),
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -938,6 +943,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -987,6 +993,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -1004,6 +1011,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -1028,6 +1036,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -1046,6 +1055,7 @@ mod tests {
             tcp_settings: None,
             quic_settings: None,
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -1069,6 +1079,7 @@ mod tests {
                 num_endpoints: 1,
             }),
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 
@@ -1093,6 +1104,7 @@ mod tests {
                 num_endpoints: 1,
             }),
             rules: NoneOrSome::None,
+            dns: None,
         }
     }
 

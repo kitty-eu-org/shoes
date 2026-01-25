@@ -20,9 +20,11 @@ use super::fnv1a::Fnv1aHasher;
 use super::md5::{compute_md5, create_chacha_key};
 use super::nonce::{SingleUseNonce, VmessNonceSequence};
 use super::vmess_stream::{ReadHeaderInfo, VmessStream};
-use crate::address::{Address, NetLocation};
+use crate::address::{Address, NetLocation, ResolvedLocation};
 use crate::async_stream::{AsyncMessageStream, AsyncStream};
 use crate::client_proxy_selector::ClientProxySelector;
+use crate::h2mux::{MUX_DESTINATION_HOST, MUX_DESTINATION_PORT, handle_h2mux_session};
+use crate::resolver::Resolver;
 use crate::stream_reader::StreamReader;
 use crate::tcp::tcp_handler::{
     TcpClientHandler, TcpClientSetupResult, TcpServerHandler, TcpServerSetupResult,
@@ -66,6 +68,7 @@ pub struct VmessTcpServerHandler {
     aead_decrypting_key: CipherDecryptingKey,
     udp_enabled: bool,
     proxy_selector: Arc<ClientProxySelector>,
+    resolver: Arc<dyn Resolver>,
 }
 
 impl std::fmt::Debug for VmessTcpServerHandler {
@@ -83,6 +86,7 @@ impl VmessTcpServerHandler {
         user_id: &str,
         udp_enabled: bool,
         proxy_selector: Arc<ClientProxySelector>,
+        resolver: Arc<dyn Resolver>,
     ) -> Self {
         let mut user_id_bytes = parse_uuid(user_id).unwrap();
         user_id_bytes.extend(b"c48619fe-8f02-49e0-b9e9-edf763e17e21");
@@ -98,6 +102,7 @@ impl VmessTcpServerHandler {
             instruction_key,
             udp_enabled,
             proxy_selector,
+            resolver,
         }
     }
 }
@@ -530,6 +535,50 @@ impl TcpServerHandler for VmessTcpServerHandler {
 
         match command {
             COMMAND_TCP => {
+                // Check for h2mux magic destination
+                if let Address::Hostname(host) = remote_location.address() {
+                    if host == MUX_DESTINATION_HOST
+                        && remote_location.port() == MUX_DESTINATION_PORT
+                    {
+                        // Create VMess stream with response header for h2mux
+                        let mut vmess_stream = VmessStream::new(
+                            server_stream,
+                            false,
+                            data_keys,
+                            read_length_shake_reader,
+                            write_length_shake_reader,
+                            enable_global_padding,
+                            Some(prefix_bytes),
+                            None,
+                        );
+
+                        let unparsed_data = stream_reader.unparsed_data();
+                        if !unparsed_data.is_empty() {
+                            vmess_stream.feed_initial_read_data(unparsed_data)?;
+                        }
+
+                        let proxy_selector = self.proxy_selector.clone();
+                        let resolver = self.resolver.clone();
+                        let udp_enabled = self.udp_enabled;
+
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_h2mux_session(
+                                Box::new(vmess_stream),
+                                None, // initial data already fed to vmess_stream
+                                udp_enabled,
+                                proxy_selector,
+                                resolver,
+                            )
+                            .await
+                            {
+                                log::debug!("VMess h2mux session ended: {}", e);
+                            }
+                        });
+
+                        return Ok(TcpServerSetupResult::AlreadyHandled);
+                    }
+                }
+
                 let mut vmess_stream = VmessStream::new(
                     server_stream,
                     false, // is_udp = false
@@ -695,7 +744,7 @@ impl TcpClientHandler for VmessTcpClientHandler {
     async fn setup_client_tcp_stream(
         &self,
         mut client_stream: Box<dyn AsyncStream>,
-        remote_location: NetLocation,
+        remote_location: ResolvedLocation,
     ) -> std::io::Result<TcpClientSetupResult> {
         // AEAD allows 120 second delta from the current time.
         // See authid.go in v2ray-core.
@@ -822,7 +871,7 @@ impl TcpClientHandler for VmessTcpClientHandler {
         // specify tcp protocol
         header_bytes[37] = 1;
 
-        let (remote_address, remote_port) = remote_location.unwrap_components();
+        let (remote_address, remote_port) = remote_location.into_location().unwrap_components();
 
         header_bytes[38] = (remote_port >> 8) as u8;
         header_bytes[39] = (remote_port & 0xff) as u8;
@@ -961,11 +1010,12 @@ impl TcpClientHandler for VmessTcpClientHandler {
     async fn setup_client_udp_bidirectional(
         &self,
         client_stream: Box<dyn AsyncStream>,
-        target: NetLocation,
+        target: ResolvedLocation,
     ) -> std::io::Result<Box<dyn AsyncMessageStream>> {
         // VMess single-target UDP mode: Send VMess header with COMMAND_UDP (2)
         // and destination address. Uses VmessStream with is_udp=true.
-        self.setup_udp_stream_impl(client_stream, target).await
+        self.setup_udp_stream_impl(client_stream, target.into_location())
+            .await
     }
 }
 

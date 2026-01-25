@@ -11,9 +11,11 @@
 //! - [`client`]: Client-side protocol configurations
 //! - [`rules`]: Rule configurations for traffic routing
 //! - [`groups`]: Top-level configuration groups and the Config enum
+//! - [`dns`]: DNS server configuration
 
 pub mod client;
 pub mod common;
+pub mod dns;
 pub mod groups;
 pub mod rules;
 pub mod selection;
@@ -23,11 +25,13 @@ pub mod transport;
 pub mod tun;
 
 // Re-export all public types for convenience
+#[allow(unused_imports)]
 pub use client::{
-    ClientConfig, ClientProxyConfig, TlsClientConfig, WebsocketClientConfig,
-    resolve_hysteria2_bandwidth,
+    ClientConfig, ClientProxyConfig, H2MuxConfig, TlsClientConfig, WebsocketClientConfig,
+    Hysteria2Bandwidth, resolve_hysteria2_bandwidth,
 };
 pub use common::DEFAULT_REALITY_SHORT_ID;
+pub use dns::{DnsConfig, DnsConfigGroup, DnsServerSpec, ExpandedDnsGroup, ExpandedDnsSpec};
 pub use groups::{ClientConfigGroup, Config, NamedPem, PemSource};
 pub use rules::{ClientChain, ClientChainHop, RuleActionConfig, RuleConfig};
 pub use selection::ConfigSelection;
