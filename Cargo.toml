@@ -50,7 +50,7 @@ h3-quinn = "0.0"
 hickory-resolver = { git = "https://github.com/hickory-dns/hickory-dns", default-features = false, features = ["tokio", "tls-aws-lc-rs", "https-aws-lc-rs", "h3-aws-lc-rs"] }
 http = "1"
 indexmap = "2"
-log = { version = "0.4", features = ["release_max_level_info"] }
+log = { version = "0.4", features = ["release_max_level_debug"] }
 lru = "0.12"
 md-5 = "0.10"
 memchr = "2"
