@@ -353,19 +353,19 @@ impl ClientProxySelector {
             match geo_action {
                 crate::geo_routing::RouteAction::Reject => {
                     // Reject traffic (ads, etc.)
-                    debug!("[ROUTING] {} -> REJECT (geo routing)", location);
+                    info!("[ROUTING] {} -> REJECT (geo routing)", location);
                     cache.insert(location.location(), CachedDecision::Block);
                     return Ok(ConnectDecision::Block);
                 }
                 crate::geo_routing::RouteAction::Direct => {
                     // CN traffic - route directly
-                    debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
+                    info!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
                     cache.insert(location.location(), CachedDecision::Direct);
                     return Ok(ConnectDecision::Direct { remote_location: location.location().clone() });
                 }
                 crate::geo_routing::RouteAction::Proxy => {
                     // Non-CN traffic - fall through to mask rules
-                    debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
+                    info!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
                 }
             }
         }
@@ -414,17 +414,17 @@ impl ClientProxySelector {
             match geo_action {
                 crate::geo_routing::RouteAction::Reject => {
                     // Reject traffic (ads, etc.)
-                    debug!("[ROUTING] {} -> REJECT (geo routing)", location);
+                    info!("[ROUTING] {} -> REJECT (geo routing)", location);
                     return Ok(ConnectDecision::Block);
                 }
                 crate::geo_routing::RouteAction::Direct => {
                     // CN traffic - route directly
-                    debug!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
+                    info!("[ROUTING] {} -> DIRECT (geo routing: CN)", location);
                     return Ok(ConnectDecision::Direct { remote_location: location.location().clone() });
                 }
                 crate::geo_routing::RouteAction::Proxy => {
                     // Non-CN traffic - fall through to mask rules
-                    debug!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
+                    info!("[ROUTING] {} -> checking mask rules (geo routing: non-CN)", location);
                 }
             }
         }
