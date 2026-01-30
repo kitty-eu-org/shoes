@@ -164,6 +164,9 @@ pub struct GeoRoutingConfig {
     /// Path to GeoSite.dat file
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geosite_file: Option<String>,
+    /// Path to custom rules JSON file
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_rules_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

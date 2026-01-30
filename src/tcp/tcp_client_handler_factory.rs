@@ -400,9 +400,10 @@ pub fn create_tcp_client_proxy_selector_with_geo(
     // Create geo matcher if config is provided
     let geo_matcher = geo_routing_config
         .and_then(|config| {
-            match Router::from_paths(
+            match Router::from_paths_with_custom_file(
                 config.geosite_file.as_deref().unwrap_or("geosite.dat"),
                 config.geoip_file.as_deref().unwrap_or("geoip.dat"),
+                config.custom_rules_file.as_deref(),
             ) {
                 Ok(router) => Some(Arc::new(router)),
                 Err(e) => {

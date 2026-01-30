@@ -2893,12 +2893,13 @@ dependencies = [
 [[package]]
 name = "v2ray-router"
 version = "0.1.0"
-source = "git+https://github.com/fagao-ai/v2ray-router?rev=f38d37d1#f38d37d17ec74dd1e0cdaa2d95f040712669d458"
 dependencies = [
  "bytes",
  "ipnet",
  "prost",
  "prost-build",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
