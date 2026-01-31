@@ -28,7 +28,7 @@ ffi = []  # Enable FFI module for non-Android builds
 [dependencies]
 async-trait = "0.1"
 # v2ray-router for geo routing - using local path
-v2ray-router = { path = "/home/hezhaozhao/v2ray-router" }
+v2ray-router = { git = "https://github.com/fagao-ai/v2ray-router" }
 # Force thiserror 1.x for compatibility with kitty project
 thiserror = "1.0"
 aws-lc-rs = { version = "1", default-features = false }
